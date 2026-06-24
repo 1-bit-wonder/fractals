@@ -1,0 +1,14 @@
+[tools]
+node = "22"
+
+[tasks.build-wasm]
+description = "Compile the AssemblyScript escape-time kernels to WASM"
+run = "npm run build:wasm"
+
+[tasks.build]
+description = "Build WASM + TypeScript"
+run = "npm run build"
+
+[tasks.dev]
+description = "Build everything and serve locally"
+run = "npm run dev"

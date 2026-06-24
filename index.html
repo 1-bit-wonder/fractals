@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>1-BIT FRACTALS</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="app">
+    <header class="head">
+      <h1>1-BIT FRACTALS</h1>
+      <p class="sub">square avatars · two colors · <span id="engine-tag" class="tag">engine: …</span></p>
+    </header>
+
+    <section class="stage">
+      <canvas id="canvas" width="512" height="512" aria-label="fractal avatar preview"></canvas>
+      <p id="hint" class="hint"></p>
+    </section>
+
+    <section class="panel">
+      <div class="group">
+        <span class="group-title">Pattern</span>
+        <div id="type-bar" class="bar"></div>
+      </div>
+
+      <div class="group">
+        <span class="group-title">Size</span>
+        <div id="size-bar" class="bar"></div>
+      </div>
+
+      <div class="group">
+        <label id="detail-label" class="slider-label">Detail <span id="detail-value">0</span></label>
+        <input id="detail" type="range" min="1" max="100" value="50" />
+      </div>
+
+      <div class="group switches">
+        <label class="switch"><input id="dither" type="checkbox" checked /> Bayer dither</label>
+        <label class="switch"><input id="invert" type="checkbox" /> Invert</label>
+      </div>
+
+      <div class="group actions">
+        <button id="shuffle" class="action">Surprise me</button>
+        <button id="download" class="action">PNG</button>
+        <button id="download-1bpp" class="action primary">1-bit PNG</button>
+      </div>
+    </section>
+
+    <footer class="foot">
+      <span>Mandelbrot · Julia · Burning Ship · Tricorn · Newton rendered in WebAssembly (AssemblyScript).</span>
+      <span>Sierpiński · Carpet · Koch · Dragon · Fern · Hilbert · Lévy C · Vicsek · Pythagoras rendered in TypeScript.</span>
+    </footer>
+  </main>
+
+  <script type="module" src="./dist/main.js"></script>
+</body>
+</html>

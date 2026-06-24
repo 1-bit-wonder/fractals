@@ -1,0 +1,20 @@
+{
+  "targets": {
+    "release": {
+      "outFile": "build/fractals.wasm",
+      "textFile": "build/fractals.wat",
+      "optimizeLevel": 3,
+      "shrinkLevel": 0,
+      "noAssert": true
+    },
+    "debug": {
+      "outFile": "build/fractals.wasm",
+      "textFile": "build/fractals.wat",
+      "debug": true
+    }
+  },
+  "options": {
+    "bindings": "raw",
+    "exportRuntime": false
+  }
+}
