@@ -5,15 +5,14 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# Permissions the deploy-pages action needs.
 permissions:
   contents: read
   pages: write
   id-token: write
 
-# Allow one concurrent Pages deployment. Do NOT cancel in-progress runs:
-# cancelling a live production deployment makes deploy-pages report
-# "Deployment cancelled", so let in-flight deploys finish.
+# One Pages deploy at a time. Do NOT cancel in-progress runs (cancelling a
+# live deployment makes deploy-pages error). If a run ever wedges, cancel it
+# manually in the Actions tab so it stops holding this group.
 concurrency:
   group: pages
   cancel-in-progress: false
@@ -33,13 +32,11 @@ jobs:
 
       - run: npm run build # asc -> build/fractals.wasm, tsc -> dist/
 
-      # Ensures the Pages site is configured for the GitHub Actions build type.
-      # Without this, deployments can sit in `deployment_queued` forever because
-      # the site is still in "Deploy from a branch" (legacy) mode.
+      # No `enablement` here: the Pages source is set to "GitHub Actions" once
+      # in the repo UI. Flipping the build type from CI can leave the first
+      # deployment stuck in `deployment_queued` while the site re-provisions.
       - name: Setup Pages
         uses: actions/configure-pages@v5
-        with:
-          enablement: true
 
       - name: Assemble static site
         run: |
@@ -55,6 +52,11 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    # The deploy job needs its own permissions; top-level grants don't reliably
+    # propagate to a job with an attached environment.
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
