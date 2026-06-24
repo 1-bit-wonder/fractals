@@ -187,6 +187,11 @@ input[type="range"]::-moz-range-thumb {
 .action:hover { background: #eee; }
 .action.primary { background: var(--ink); color: var(--paper); }
 .action.primary:hover { background: #333; }
+.action:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.action:disabled:hover { background: var(--paper); }
 
 .foot {
   margin-top: 24px;

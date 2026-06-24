@@ -169,6 +169,13 @@ const detailLabel = $<HTMLLabelElement>("detail-label");
 const detailValue = $<HTMLSpanElement>("detail-value");
 const engineTag = $<HTMLSpanElement>("engine-tag");
 const hint = $<HTMLParagraphElement>("hint");
+const shuffleBtn = $<HTMLButtonElement>("shuffle");
+
+// "Surprise me" only changes patterns with a random/variable element: Julia
+// cycles its constant; the chaos-game fractals reseed. The other 11 are fully
+// deterministic, so there is nothing to shuffle.
+const SHUFFLEABLE = new Set<Kind>(["julia", "sierpinski", "fern"]);
+const canShuffle = (kind: Kind): boolean => SHUFFLEABLE.has(kind);
 
 // --- Rendering ------------------------------------------------------------
 
@@ -296,6 +303,12 @@ function syncControls(): void {
       ? "drag to pan · scroll to zoom · double-click to reset"
       : "geometric fractal · adjust detail or shuffle the seed";
   }
+
+  const shuffleable = canShuffle(state.kind);
+  shuffleBtn.disabled = !shuffleable;
+  shuffleBtn.title = shuffleable
+    ? (state.kind === "julia" ? "cycle to a new Julia constant" : "reseed the random pattern")
+    : `nothing random to shuffle for ${spec.label}`;
 }
 
 // --- Escape-time interaction ----------------------------------------------
@@ -388,7 +401,8 @@ invertToggle.addEventListener("change", () => {
 });
 
 let juliaIdx = 0;
-$<HTMLButtonElement>("shuffle").addEventListener("click", () => {
+shuffleBtn.addEventListener("click", () => {
+  if (!canShuffle(state.kind)) return;
   state.seed = (state.seed * 1664525 + 1013904223) >>> 0;
   if (state.kind === "julia") {
     juliaIdx = (juliaIdx + 1) % JULIA_PRESETS.length;
