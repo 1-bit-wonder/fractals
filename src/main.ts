@@ -5,6 +5,7 @@ import { GEOMETRIC, type GeometricKind } from "./geometric.js";
 import { mandelbrotJS, juliaJS, burningShipJS, tricornJS, newtonJS } from "./escape.js";
 import { loadFractalWasm, renderWithBuffer, type FractalExports } from "./wasm.js";
 import { encode1bitPng } from "./png1.js";
+import { computeOrbit, EXPLAINERS, NEWTON_ROOTS, type OrbitKind } from "./learn.js";
 
 type EscapeKind = "mandelbrot" | "julia" | "burningShip" | "tricorn" | "newton";
 type Kind = EscapeKind | GeometricKind;
@@ -104,6 +105,8 @@ const JULIA_PRESETS: Array<[number, number]> = [
   [-0.7269, 0.1889], [0.355, 0.355], [-0.74543, 0.11301], [0.37, 0.1],
 ];
 
+type Mode = "generate" | "learn";
+
 interface State {
   kind: Kind;
   size: number;
@@ -112,6 +115,7 @@ interface State {
   detail: Record<Kind, number>;
   seed: number;
   views: Record<EscapeKind, View>;
+  mode: Mode;
 }
 
 const state: State = {
@@ -119,6 +123,7 @@ const state: State = {
   size: 512,
   quant: "bayer",
   invert: false,
+  mode: "generate",
   detail: Object.fromEntries(
     KIND_ORDER.map((k) => [k, SPECS[k].detailDefault]),
   ) as Record<Kind, number>,
@@ -144,6 +149,17 @@ const $ = <T extends HTMLElement>(id: string): T => {
 
 const canvas = $<HTMLCanvasElement>("canvas");
 const ctx = canvas.getContext("2d")!;
+const overlay = $<HTMLCanvasElement>("overlay");
+const octx = overlay.getContext("2d")!;
+const modeBar = $<HTMLDivElement>("mode-bar");
+const learnPanel = $<HTMLElement>("learn-panel");
+const learnTitle = $<HTMLHeadingElement>("learn-title");
+const learnWhat = $<HTMLParagraphElement>("learn-what");
+const learnRule = $<HTMLPreElement>("learn-rule");
+const orbitBox = $<HTMLDivElement>("orbit-box");
+const orbitReadout = $<HTMLParagraphElement>("orbit-readout");
+const buildupBox = $<HTMLDivElement>("buildup-box");
+const buildupStatus = $<HTMLSpanElement>("buildup-status");
 const typeBar = $<HTMLDivElement>("type-bar");
 const sizeBar = $<HTMLDivElement>("size-bar");
 const ditherToggle = $<HTMLInputElement>("dither");
@@ -208,6 +224,7 @@ function render(): void {
   const bright = computeBrightness();
   const img = quantize(bright, size, state.quant, state.invert);
   ctx.putImageData(img, 0, 0);
+  if (state.mode === "learn") updateOverlay();
 }
 
 // --- UI construction ------------------------------------------------------
@@ -240,6 +257,10 @@ function buildSizeBar(): void {
 
 function selectKind(kind: Kind): void {
   state.kind = kind;
+  if (state.mode === "learn") {
+    stopBuildup();
+    updateLearnPanel();
+  }
   syncControls();
   scheduleRender();
 }
@@ -266,9 +287,15 @@ function syncControls(): void {
     ? (wasm ? "engine: WASM" : "engine: JS")
     : "engine: TS";
   engineTag.classList.toggle("wasm", isEscape && !!wasm);
-  hint.textContent = isEscape
-    ? "drag to pan · scroll to zoom · double-click to reset"
-    : "geometric fractal · adjust detail or shuffle the seed";
+  if (state.mode === "learn") {
+    hint.textContent = isEscape
+      ? "learn mode · move over the image to trace an orbit · scroll to zoom"
+      : "learn mode · press build-up to watch it form";
+  } else {
+    hint.textContent = isEscape
+      ? "drag to pan · scroll to zoom · double-click to reset"
+      : "geometric fractal · adjust detail or shuffle the seed";
+  }
 }
 
 // --- Escape-time interaction ----------------------------------------------
@@ -292,10 +319,21 @@ function isEscape(): boolean {
 }
 
 canvas.addEventListener("mousedown", (ev) => {
-  if (!isEscape()) return;
+  if (!isEscape() || state.mode === "learn") return; // learn mode: hover traces orbits
   dragging = true;
   const v = state.views[state.kind as EscapeKind];
   dragStart = { x: ev.clientX, y: ev.clientY, cx: v.cx, cy: v.cy };
+});
+
+// Learn mode: moving over the canvas picks the point whose orbit we trace.
+canvas.addEventListener("mousemove", (ev) => {
+  if (state.mode !== "learn" || !isEscape()) return;
+  const rect = canvas.getBoundingClientRect();
+  lastFrac = {
+    fx: (ev.clientX - rect.left) / rect.width,
+    fy: (ev.clientY - rect.top) / rect.height,
+  };
+  updateOverlay();
 });
 
 window.addEventListener("mouseup", () => { dragging = false; });
@@ -380,6 +418,237 @@ $<HTMLButtonElement>("download-1bpp").addEventListener("click", async () => {
   const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const blob = await encode1bitPng(img);
   saveBlob(blob, "-1bpp");
+});
+
+// --- Learn mode -----------------------------------------------------------
+
+// Last hovered point, as a 0..1 fraction of the canvas (so it survives zoom/pan
+// and resizes). Starts a little above centre so an orbit shows on entry.
+let lastFrac = { fx: 0.5, fy: 0.42 };
+
+/** Match the overlay's backing store to its displayed size (sharp on HiDPI). */
+function sizeOverlay(): { w: number; h: number } {
+  const rect = overlay.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.max(1, Math.round(rect.width));
+  const h = Math.max(1, Math.round(rect.height));
+  if (overlay.width !== w * dpr || overlay.height !== h * dpr) {
+    overlay.width = w * dpr;
+    overlay.height = h * dpr;
+  }
+  octx.setTransform(dpr, 0, 0, dpr, 0, 0); // draw in CSS pixels
+  return { w, h };
+}
+
+// White-haloed strokes/dots/text so the overlay reads over both black and white.
+function strokeHalo(build: () => void, lw = 1.5): void {
+  octx.lineJoin = "round";
+  octx.lineCap = "round";
+  octx.beginPath();
+  build();
+  octx.lineWidth = lw + 3;
+  octx.strokeStyle = "rgba(255,255,255,0.95)";
+  octx.stroke();
+  octx.lineWidth = lw;
+  octx.strokeStyle = "#000";
+  octx.stroke();
+}
+
+function dotHalo(x: number, y: number, r: number): void {
+  octx.beginPath();
+  octx.arc(x, y, r + 1.5, 0, Math.PI * 2);
+  octx.fillStyle = "rgba(255,255,255,0.95)";
+  octx.fill();
+  octx.beginPath();
+  octx.arc(x, y, r, 0, Math.PI * 2);
+  octx.fillStyle = "#000";
+  octx.fill();
+}
+
+function textHalo(t: string, x: number, y: number): void {
+  octx.font = '11px "JetBrains Mono", monospace';
+  octx.textBaseline = "middle";
+  octx.lineWidth = 3;
+  octx.strokeStyle = "rgba(255,255,255,0.95)";
+  octx.strokeText(t, x, y);
+  octx.fillStyle = "#000";
+  octx.fillText(t, x, y);
+}
+
+function fmt(n: number): string {
+  return (n < 0 ? "−" : "") + Math.abs(n).toFixed(3);
+}
+
+function complexStr(re: number, im: number): string {
+  return `${fmt(re)} ${im < 0 ? "−" : "+"} ${Math.abs(im).toFixed(3)}i`;
+}
+
+/** Redraw the teaching overlay (axes + the current point's orbit). */
+function updateOverlay(): void {
+  const { w, h } = sizeOverlay();
+  octx.clearRect(0, 0, w, h);
+  if (state.mode !== "learn" || !isEscape()) return;
+
+  const ek = state.kind as EscapeKind;
+  const v = state.views[ek];
+  const toX = (re: number) => ((re - v.cx) / v.scale + 0.5) * w;
+  const toY = (im: number) => ((im - v.cy) / v.scale + 0.5) * h;
+
+  // Axes (real = horizontal, imaginary = vertical), dashed and labelled.
+  octx.save();
+  octx.setLineDash([4, 4]);
+  const ay = toY(0);
+  if (ay >= 0 && ay <= h) {
+    strokeHalo(() => { octx.moveTo(0, ay); octx.lineTo(w, ay); }, 1);
+    textHalo("Re", w - 18, ay - 9);
+  }
+  const ax = toX(0);
+  if (ax >= 0 && ax <= w) {
+    strokeHalo(() => { octx.moveTo(ax, 0); octx.lineTo(ax, h); }, 1);
+    textHalo("Im", ax + 7, 11);
+  }
+  octx.restore();
+
+  // The picked point, then its orbit.
+  const pRe = v.cx + (lastFrac.fx - 0.5) * v.scale;
+  const pIm = v.cy + (lastFrac.fy - 0.5) * v.scale;
+  const maxIter = Math.round(state.detail[ek]);
+  const orbit = computeOrbit(ek as OrbitKind, pRe, pIm, v.jx, v.jy, maxIter);
+  const pts = orbit.points;
+
+  if (pts.length >= 2) {
+    strokeHalo(() => {
+      octx.moveTo(toX(pts[0][0]), toY(pts[0][1]));
+      for (let i = 1; i < pts.length; i++) octx.lineTo(toX(pts[i][0]), toY(pts[i][1]));
+    });
+  }
+  pts.forEach((p, i) => {
+    const x = toX(p[0]), y = toY(p[1]);
+    if (x < -40 || x > w + 40 || y < -40 || y > h + 40) return;
+    dotHalo(x, y, i === 0 ? 3.5 : 2.2);
+    if (i <= 4) textHalo(String(i), x + 6, y - 7);
+  });
+
+  // Ring + label on the input point (c for Mandelbrot-family, z₀ for Julia/Newton).
+  const inX = lastFrac.fx * w, inY = lastFrac.fy * h;
+  const inLabel = ek === "mandelbrot" || ek === "burningShip" || ek === "tricorn" ? "c" : "z₀";
+  strokeHalo(() => { octx.moveTo(inX + 8, inY); octx.arc(inX, inY, 8, 0, Math.PI * 2); }, 1.5);
+  textHalo(inLabel, inX + 11, inY + 11);
+
+  updateReadout(orbit, ek, pRe, pIm, v.jx, v.jy);
+}
+
+function updateReadout(
+  orbit: ReturnType<typeof computeOrbit>,
+  ek: EscapeKind, pRe: number, pIm: number, jx: number, jy: number,
+): void {
+  const lines: string[] = [];
+  if (ek === "julia") {
+    lines.push(`z₀ = ${complexStr(pRe, pIm)}`);
+    lines.push(`<span class="muted">c = ${complexStr(jx, jy)} (fixed)</span>`);
+  } else if (ek === "newton") {
+    lines.push(`z₀ = ${complexStr(pRe, pIm)}`);
+  } else {
+    lines.push(`c = ${complexStr(pRe, pIm)}`);
+    lines.push(`<span class="muted">z₀ = 0</span>`);
+  }
+
+  // First couple of computed steps, to make the iteration concrete.
+  const shown = orbit.points.slice(1, 3);
+  shown.forEach((p, i) => lines.push(`z${i + 1} = ${complexStr(p[0], p[1])}`));
+
+  if (ek === "newton") {
+    lines.push(orbit.converged
+      ? `<span class="verdict">→ converged to root ${NEWTON_ROOTS[orbit.root ?? 0]} in ${orbit.steps} steps</span>`
+      : `<span class="verdict">→ still wandering after ${orbit.steps} steps</span>`);
+  } else if (orbit.escaped) {
+    lines.push(`<span class="verdict">→ escaped past radius 2 after ${orbit.steps} steps · OUTSIDE the set (shaded by speed)</span>`);
+  } else {
+    lines.push(`<span class="verdict">→ stayed bounded through all ${orbit.steps} steps · INSIDE the set (black)</span>`);
+  }
+  orbitReadout.innerHTML = lines.join("<br>");
+}
+
+/** Refresh the explanatory copy + which sub-box (orbit vs build-up) shows. */
+function updateLearnPanel(): void {
+  const e = EXPLAINERS[state.kind];
+  learnTitle.textContent = e.title;
+  learnWhat.textContent = e.what;
+  learnRule.textContent = e.rule.join("\n");
+  const esc = isEscape();
+  orbitBox.hidden = !esc;
+  buildupBox.hidden = esc;
+  if (!esc) buildupStatus.textContent = "";
+}
+
+function applyMode(): void {
+  const learn = state.mode === "learn";
+  for (const btn of modeBar.querySelectorAll<HTMLButtonElement>("button")) {
+    btn.classList.toggle("active", btn.dataset.mode === state.mode);
+  }
+  learnPanel.hidden = !learn;
+  overlay.style.display = learn ? "block" : "none";
+  if (learn) {
+    updateLearnPanel();
+    render(); // render() refreshes the overlay when in learn mode
+  } else {
+    stopBuildup();
+    octx.clearRect(0, 0, overlay.width, overlay.height);
+  }
+  syncControls();
+}
+
+// --- Build-up animation (geometric fractals) ------------------------------
+
+let buildupTimer: number | undefined;
+
+function stopBuildup(): void {
+  if (buildupTimer !== undefined) {
+    clearTimeout(buildupTimer);
+    buildupTimer = undefined;
+  }
+}
+
+function playBuildup(): void {
+  stopBuildup();
+  const spec = SPECS[state.kind];
+  const target = Math.round(state.detail[state.kind]);
+  const min = spec.detailMin;
+  // A handful of frames from min up to the current detail (~10 max).
+  const span = Math.max(0, target - min);
+  const stride = Math.max(spec.detailStep, Math.ceil(span / 10 / spec.detailStep) * spec.detailStep);
+  const frames: number[] = [];
+  for (let d = min; d < target; d += stride) frames.push(d);
+  frames.push(target);
+
+  let i = 0;
+  const tick = (): void => {
+    const d = frames[i];
+    state.detail[state.kind] = d;
+    detailInput.value = String(d);
+    detailValue.textContent = String(d);
+    const done = i === frames.length - 1;
+    buildupStatus.textContent = `${spec.detailLabel}: ${d}${done ? "  ✓" : " …"}`;
+    render();
+    i++;
+    buildupTimer = done ? undefined : window.setTimeout(tick, 430);
+  };
+  tick();
+}
+
+// --- Learn mode wiring ----------------------------------------------------
+
+for (const btn of modeBar.querySelectorAll<HTMLButtonElement>("button")) {
+  btn.addEventListener("click", () => {
+    state.mode = btn.dataset.mode as Mode;
+    applyMode();
+  });
+}
+
+$<HTMLButtonElement>("play").addEventListener("click", playBuildup);
+
+window.addEventListener("resize", () => {
+  if (state.mode === "learn") updateOverlay();
 });
 
 // --- Boot -----------------------------------------------------------------
